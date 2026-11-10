@@ -1,0 +1,34 @@
+{
+  "id": "split-view",
+  "name": "Split View",
+  "description": "Splits the session view into configurable panes (chat, file actions, thinking process) with switchable layouts.",
+  "categories": ["developer-tools"],
+  "contracts": {
+    "tools": [
+      "split-view.set_layout",
+      "split-view.get_layout"
+    ]
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "host": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {"type": "boolean", "default": true},
+          "default_layout": {"type": "string", "enum": ["single", "dual-files", "dual-thinking", "triple"]},
+          "auto_think_expand": {"type": "boolean", "default": false},
+          "max_diff_lines": {"type": "number", "default": 50},
+          "show_additions": {"type": "boolean", "default": true},
+          "show_deletions": {"type": "boolean", "default": true},
+          "show_line_numbers": {"type": "boolean", "default": true}
+        }
+      }
+    }
+  }
+}
