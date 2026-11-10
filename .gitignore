@@ -1,4 +1,68 @@
+# ── Dependencies ─────────────────────────────────────────────────────────
 node_modules/
+.pnp
+.pnp.js
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+!.yarn/plugins
+!.yarn/versions
+
+# ── Build output ─────────────────────────────────────────────────────────
 dist/
+build/
+out/
+*.tsbuildinfo
+
+# ── Logs ─────────────────────────────────────────────────────────────────
+logs/
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ── Environment & secrets ────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets.json
+**/credentials.json
+
+# ── Tests & coverage ─────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# ── Caches ───────────────────────────────────────────────────────────────
+.cache/
+.parcel-cache/
+.turbo/
+.eslintcache
+.stylelintcache
+.swc/
+
+# ── Editors & OS ─────────────────────────────────────────────────────────
 .DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# ── OpenClaw runtime & session state ─────────────────────────────────────
+.openclaw/
+session-state.json
+*.openclaw.json
+
+# ── Package archives ─────────────────────────────────────────────────────
+*.tgz
+*.tar.gz

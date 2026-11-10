@@ -1,5 +1,10 @@
 // ── layout/registry.ts ────────────────────────────────────────────────
 // Per-session layout state store backed by OpenClaw's keyed-state runtime.
+//
+// Runtime access is deferred out of register(): the plugin is loaded in
+// several registration modes (cli-metadata, discovery, setup-only) where
+// api.runtime throws by design. The durable store is therefore opened lazily
+// on first use and all accessors degrade to in-memory state until then.
 
 import type { LayoutMode, SessionLayoutState, PluginConfig, DiffEntry, ThinkingBlock } from "../types/layout.js";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
@@ -13,21 +18,41 @@ export interface LayoutRegistry {
   flush(stateKey: string): void;
 }
 
-/** Create a memory-backed registry that delegates durable state to api.runtime.state */
-export function createLayoutRegistry(api: OpenClawPluginApi): LayoutRegistry {
-  // Safe namespace — colons cause PluginStateStoreError
-  const safeNamespace = `${api.id.replace(/[:\/]/g, "_")}_layout`;
+/** Minimal shape of the keyed-state store we depend on. */
+interface KeyedStore {
+  lookup(key: string): unknown;
+  register(key: string, value: unknown): unknown;
+}
 
-  const store = api.runtime.state.openKeyedStoreV2<{
-    mode: LayoutMode;
-    widths?: Record<string, number>;
-    collapsed?: string[];
-  }>({ namespace: safeNamespace, maxEntries: 500, defaultTtlMs: 24 * 60 * 60_000 });
+export function createLayoutRegistry(api: OpenClawPluginApi): LayoutRegistry {
+  // Local cache is the source of truth for fast reads and the fallback when
+  // the durable store is not reachable (setup/discovery registration modes).
+  const localCache = new Map<string, { mode: LayoutMode; widths?: Record<string, number>; collapsed: string[] }>();
 
   // In-memory buffers for live streaming data (diffs & thinking blocks).
   const memBuffers = new Map<string, { diffs: DiffEntry[]; thinkingBlocks: ThinkingBlock[] }>();
-  // Local cache mirrors durable store for fast reads
-  const localCache = new Map<string, { _mode: LayoutMode; widths?: Record<string, number>; collapsed: string[] }>();
+
+  let store: KeyedStore | null = null;
+  let storeResolved = false;
+
+  /** Lazily open the durable store; returns null when runtime is unavailable. */
+  function getStore(): KeyedStore | null {
+    if (storeResolved) return store;
+    storeResolved = true;
+    try {
+      // Safe namespace — colons cause PluginStateStoreError.
+      const safeNamespace = `${api.id.replace(/[:/]/g, "_")}_layout`;
+      store = api.runtime.state.openKeyedStoreV2<{
+        mode: LayoutMode;
+        widths?: Record<string, number>;
+        collapsed?: string[];
+      }>({ namespace: safeNamespace, maxEntries: 500, defaultTtlMs: 24 * 60 * 60_000 }) as unknown as KeyedStore;
+    } catch {
+      // Runtime unavailable during this registration mode — stay in memory.
+      store = null;
+    }
+    return store;
+  }
 
   function resolveConfig(): PluginConfig {
     const raw = api.pluginConfig as Record<string, unknown> | undefined;
@@ -46,52 +71,63 @@ export function createLayoutRegistry(api: OpenClawPluginApi): LayoutRegistry {
   }
 
   function getStateInternal(key: string): SessionLayoutState {
-    // Try local cache first
     const cached = localCache.get(key);
     if (cached) {
-      return { mode: cached._mode, widths: cached.widths, collapsed: new Set(cached.collapsed) } as SessionLayoutState;
+      return {
+        mode: cached.mode,
+        widths: cached.widths,
+        collapsed: new Set(cached.collapsed) as SessionLayoutState["collapsed"],
+      };
     }
 
-    let rawPromise: any;
-    try { rawPromise = store.lookup(key); } catch { /* setup phase, ignore */ }
-
-    // Handle both sync and async return types
-    let rawRecord: Record<string, unknown> | undefined;
-    if (rawPromise && typeof rawPromise.then === "function") {
-      // It's a promise — sync read means we fall back to defaults
-      return { mode: resolveConfig().host.default_layout, widths: undefined, collapsed: new Set() } as SessionLayoutState;
-    } else {
-      rawRecord = rawPromise;
+    const durable = getStore();
+    if (durable) {
+      try {
+        const rawPromise = durable.lookup(key);
+        const raw = rawPromise && typeof (rawPromise as Promise<unknown>).then === "function"
+          ? undefined
+          : (rawPromise as Record<string, unknown> | undefined);
+        if (raw && typeof raw === "object" && "mode" in raw) {
+          const typed = raw as { mode?: LayoutMode; widths?: Record<string, number>; collapsed?: string[] };
+          const state: SessionLayoutState = {
+            mode: typed.mode ?? resolveConfig().host.default_layout,
+            widths: typed.widths,
+            collapsed: new Set(typed.collapsed ?? []) as SessionLayoutState["collapsed"],
+          };
+          localCache.set(key, {
+            mode: state.mode,
+            widths: state.widths,
+            collapsed: Array.from(state.collapsed),
+          });
+          return state;
+        }
+      } catch {
+        // Corrupt/unavailable row — fall through to defaults.
+      }
     }
 
-    if (!rawRecord || !("mode" in rawRecord)) {
-      return { mode: resolveConfig().host.default_layout, widths: undefined, collapsed: new Set() } as SessionLayoutState;
-    }
-
-    // Safe typed access through unknown
-    const typed = rawRecord as { mode?: LayoutMode; widths?: Record<string, number>; collapsed?: string[] };
     return {
-      mode: typed.mode ?? resolveConfig().host.default_layout,
-      widths: typed.widths,
-      collapsed: new Set(typed.collapsed ?? []),
-    } as SessionLayoutState;
+      mode: resolveConfig().host.default_layout,
+      widths: undefined,
+      collapsed: new Set(),
+    };
   }
 
   function setStateInternal(key: string, patch: Partial<SessionLayoutState>): void {
     const current = getStateInternal(key);
-    const serialized = {
-      _mode: patch.mode ?? current.mode,
+    const next = {
+      mode: patch.mode ?? current.mode,
       widths: patch.widths ?? current.widths,
       collapsed: Array.from(patch.collapsed ?? current.collapsed),
     };
-    localCache.set(key, serialized);
+    localCache.set(key, next);
+
+    const durable = getStore();
+    if (!durable) return;
     try {
-      store.register(
-        key,
-        (serialized as unknown) as { mode: LayoutMode; widths?: Record<string, number>; collapsed?: string[] },
-      );
+      durable.register(key, { mode: next.mode, widths: next.widths, collapsed: next.collapsed });
     } catch {
-      /* defer to next call */
+      // Durable write failed — in-memory state still reflects the change.
     }
   }
 

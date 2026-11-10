@@ -12,6 +12,14 @@
   "activation": {
     "onStartup": true
   },
+  "toolMetadata": {
+    "split-view.set_layout": {
+      "profiles": ["minimal", "coding", "messaging", "full"]
+    },
+    "split-view.get_layout": {
+      "profiles": ["minimal", "coding", "messaging", "full"]
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
